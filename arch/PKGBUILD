@@ -5,23 +5,53 @@
 # This package is named `dwarfstar4` (DwarfStar 4) and ships the upstream
 # binaries unchanged: ds4, ds4-server, ds4-bench, ds4-eval, ds4-agent.
 #
-# Build target: `make strix-halo` (ROCm / HIP, gfx1151 = Radeon 8060S).
+# Build target: `make strix-halo` (ROCm / HIP, multi-arch fat binary).
 # Source: upstream https://github.com/antirez/ds4 pinned at a known-good
 # commit. To upgrade, bump _commit and pkgver and re-run `makepkg -s`.
+#
+# Multi-GPU / multi-arch support
+# ------------------------------
+# hipcc accepts multiple `--offload-arch=` flags and produces a single fat
+# binary containing one device code object per arch. At run time the HIP
+# runtime loads the code object whose arch matches the active GPU. There is
+# no fat-binary "lowering" or PTX-style JIT fallback on ROCm — if a GPU's
+# arch is not in the binary, you get a runtime error on that device.
+#
+# This PKGBUILD therefore detects which AMD GPU architectures are visible
+# on the build host (via rocminfo) and builds for all of them, so a system
+# with both an iGPU (e.g. gfx1151 / Radeon 8060S) and a dGPU
+# (e.g. gfx1100 / RX 7900 XTX) gets a single dwarfstar4 package that runs
+# correctly on either card.
+#
+# Selection priority for the offload-arch list:
+#   1. $ROCM_ARCH (env), if set — explicit override always wins.
+#   2. Auto-detect with rocminfo: every gfx* listed becomes an offload arch.
+#   3. Fallback if rocminfo is unavailable or returns nothing:
+#      "gfx1100 gfx1151" — covers RX 7900 XTX + Strix Halo, the two AMD
+#      RDNA3 / RDNA3.5 targets this package was built around.
+#
+# At run time, select a specific GPU with the standard ROCm env vars:
+#   HIP_VISIBLE_DEVICES=0     # pick HIP device index 0 (often the dGPU)
+#   ROCR_VISIBLE_DEVICES=1    # lower-level KFD-side mask
+# Use `rocminfo` to see the device list and indices.
 
 pkgname=dwarfstar4
 _upstream_name=ds4
 pkgver=0.r80ebbc3
-pkgrel=1
+pkgrel=2
 # Pinned upstream commit (antirez/ds4 main @ 2026-06-17). Update together
 # with pkgver when bumping.
 _commit=80ebbc396aee40eedc1d829222f3362d10fa4c6c
-pkgdesc="DeepSeek 4 Flash & PRO local inference engine (ROCm/Strix Halo, gfx1151)"
+pkgdesc="DeepSeek 4 Flash & PRO local inference engine (ROCm, multi-arch: gfx1100 + gfx1151 by default)"
 arch=('x86_64')
 url="https://github.com/antirez/ds4"
 license=('MIT')
 
-# Runtime: HIP + the BLAS / WMMA libs the Strix Halo backend links against.
+# Runtime: HIP + the BLAS / WMMA libs the ROCm backend links against.
+# The Arch rocblas / hipblas / hipblaslt packages ship Tensile kernels for
+# every supported gfx* arch (gfx1100 and gfx1151 included) in a single
+# library, so no extra runtime packages are needed for the multi-arch
+# build.
 depends=(
   'rocm-hip-runtime'
   'rocblas'
@@ -31,13 +61,16 @@ depends=(
 )
 
 # Build: hipcc + HIP/ROCm headers (rocm-hip-sdk provides hipcc), and the
-# usual base-devel chain. `git` is needed by the VCS source line.
+# usual base-devel chain. `git` is needed by the VCS source line. We pull
+# in `rocminfo` at build time so build() can auto-detect the host's AMD
+# GPU arches.
 makedepends=(
   'git'
   'make'
   'gcc'
   'rocm-hip-sdk'
   'rocm-llvm'
+  'rocminfo'
   'rocwmma'
   'rocblas'
   'hipblas'
@@ -46,7 +79,7 @@ makedepends=(
 
 # Optional helpers for runtime sanity / monitoring.
 optdepends=(
-  'rocminfo: query ROCm devices (rocminfo | grep gfx1151)'
+  'rocminfo: query ROCm devices (rocminfo | grep -E "gfx1100|gfx1151")'
   'rocm-smi-lib: rocm-smi runtime GPU monitoring'
 )
 
@@ -73,23 +106,73 @@ pkgver() {
   printf '0.r%s' "$(git rev-parse --short=7 HEAD)"
 }
 
+# _dwarfstar4_detect_arches:
+#   Print a space-separated list of AMD GPU arches to target.
+#   Honors $ROCM_ARCH (override), otherwise uses `rocminfo` to enumerate
+#   every gfx* agent on the build host, otherwise falls back to the
+#   "gfx1100 gfx1151" pair (RX 7900 XTX + Strix Halo).
+_dwarfstar4_detect_arches() {
+  if [ -n "${ROCM_ARCH:-}" ]; then
+    # Allow either space- or comma-separated input.
+    printf '%s' "${ROCM_ARCH//,/ }"
+    return
+  fi
+
+  if command -v rocminfo >/dev/null 2>&1; then
+    local detected
+    detected="$(
+      rocminfo 2>/dev/null \
+        | awk '/Name:[[:space:]]+gfx[0-9a-fA-F]+/ {print $2}' \
+        | sort -u \
+        | tr '\n' ' '
+    )"
+    # Trim trailing whitespace.
+    detected="${detected%[[:space:]]}"
+    if [ -n "$detected" ]; then
+      printf '%s' "$detected"
+      return
+    fi
+  fi
+
+  # Sensible default: the two architectures this PKGBUILD is documented
+  # to target. Anyone on hardware outside this set should pass ROCM_ARCH=.
+  printf '%s' 'gfx1100 gfx1151'
+}
+
 build() {
   cd "${srcdir}/${_upstream_name}"
 
   # Use the system hipcc (Arch installs to /opt/rocm/bin/hipcc) and the
-  # Strix Halo offload arch. These match the Makefile defaults, but we set
-  # them explicitly so the build is reproducible regardless of PATH order.
+  # auto-detected (or user-overridden) offload arch list.
   export HIPCC="${HIPCC:-/opt/rocm/bin/hipcc}"
-  export ROCM_ARCH="${ROCM_ARCH:-gfx1151}"
 
-  # Drop -march=native so the resulting binaries are usable on any Zen 5
-  # Strix Halo box, not just the build host. The Makefile defaults
-  # NATIVE_CPU_FLAG to -march=native; override it.
+  local _arches _arch _offload_flags=()
+  _arches="$(_dwarfstar4_detect_arches)"
+  for _arch in $_arches; do
+    _offload_flags+=("--offload-arch=$_arch")
+  done
+
+  msg2 "dwarfstar4: building HIP fat binary for: ${_arches}"
+
+  # Drop -march=native so the resulting binaries are usable on any modern
+  # x86_64 box, not just the build host. x86-64-v3 covers Zen 3+ / Haswell+
+  # which matches every realistic ROCm-on-AMD-CPU target.
   export NATIVE_CPU_FLAG="-march=x86-64-v3"
 
+  # Reconstruct the Makefile's ROCM_CFLAGS so we control --offload-arch
+  # ourselves (the upstream Makefile only supports one arch via
+  # ROCM_ARCH). Everything else here matches Makefile defaults.
+  local _rocm_cflags="-O3 -ffast-math -g -fno-finite-math-only -pthread \
+-D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument \
+${_offload_flags[*]}"
+
   # Build the ROCm / Strix Halo target. This produces ds4, ds4-server,
-  # ds4-bench, ds4-eval, ds4-agent in the source tree.
-  make strix-halo -j"$(nproc)"
+  # ds4-bench, ds4-eval, ds4-agent in the source tree. We pass our
+  # multi-arch ROCM_CFLAGS so the Makefile recipe uses it verbatim.
+  make strix-halo -j"$(nproc)" \
+    HIPCC="$HIPCC" \
+    NATIVE_CPU_FLAG="$NATIVE_CPU_FLAG" \
+    ROCM_CFLAGS="$_rocm_cflags"
 }
 
 package() {
