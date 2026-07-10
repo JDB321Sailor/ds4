@@ -1,0 +1,83 @@
+#!/bin/sh
+set -eu
+
+MODEL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/models"
+export DS4_GGUF_DIR="$MODEL_DIR"
+DOWNLOADER="/usr/share/dwarfstar4/download_model.sh"
+
+Q2_IMATRIX_FILE="DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf"
+Q4_IMATRIX_FILE="DeepSeek-V4-Flash-Q4KExperts-F16HC-F16Compressor-F16Indexer-Q8Attn-Q8Shared-Q8Out-chat-v2-imatrix.gguf"
+Q2_Q4_IMATRIX_FILE="DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed.gguf"
+PRO_Q2_IMATRIX_FILE="DeepSeek-V4-Pro-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-Instruct-imatrix.gguf"
+PRO_Q4_LAYERS00_30_FILE="DeepSeek-V4-Pro-Q4K-Layers00-30.gguf"
+PRO_Q4_LAYERS31_OUTPUT_FILE="DeepSeek-V4-Pro-Q4K-Layers-31-output.gguf"
+
+usage() {
+  cat <<'EOM'
+Usage: dwarfstar4-download-model <target> [download_model.sh options]
+
+Targets mirror /usr/share/dwarfstar4/download_model.sh.
+Recommended target for Strix Halo + RX 7900 XTX:
+  dwarfstar4-download-model q2-imatrix
+EOM
+}
+
+if [ $# -eq 0 ]; then
+  usage
+  exit 1
+fi
+
+model="$1"
+shift
+
+main_file=""
+case "$model" in
+  q2-imatrix) main_file="$Q2_IMATRIX_FILE" ;;
+  q2-q4-imatrix) main_file="$Q2_Q4_IMATRIX_FILE" ;;
+  q4-imatrix) main_file="$Q4_IMATRIX_FILE" ;;
+  pro-q2-imatrix) main_file="$PRO_Q2_IMATRIX_FILE" ;;
+  pro-q4-layers00-30) main_file="$PRO_Q4_LAYERS00_30_FILE" ;;
+  pro-q4-layers31-output) main_file="$PRO_Q4_LAYERS31_OUTPUT_FILE" ;;
+  pro-q4-split)
+    if [ -s "$MODEL_DIR/$PRO_Q4_LAYERS00_30_FILE" ] && [ -s "$MODEL_DIR/$PRO_Q4_LAYERS31_OUTPUT_FILE" ]; then
+      echo "dwarfstar4-download-model: both PRO split GGUF files are already present in $MODEL_DIR, skipping download."
+      exit 0
+    fi
+    ;;
+  mtp) ;;
+  -h|--help|help)
+    usage
+    exec "$DOWNLOADER" "$model" "$@"
+    ;;
+  *)
+    usage >&2
+    exec "$DOWNLOADER" "$model" "$@"
+    ;;
+esac
+
+mkdir -p "$MODEL_DIR"
+
+if [ -n "$main_file" ] && [ -s "$MODEL_DIR/$main_file" ]; then
+  echo "dwarfstar4-download-model: $main_file is already present in $MODEL_DIR, skipping download."
+  case "$model" in
+    q2-imatrix|q2-q4-imatrix|q4-imatrix|pro-q2-imatrix)
+      ln -sfn "$MODEL_DIR/$main_file" "$MODEL_DIR/ds4flash.gguf"
+      echo "dwarfstar4-download-model: refreshed $MODEL_DIR/ds4flash.gguf -> $MODEL_DIR/$main_file"
+      ;;
+  esac
+  exit 0
+fi
+
+if [ ! -x "$DOWNLOADER" ]; then
+  echo "dwarfstar4-download-model: missing downloader at $DOWNLOADER" >&2
+  exit 1
+fi
+
+"$DOWNLOADER" "$model" "$@"
+
+case "$model" in
+  q2-imatrix|q2-q4-imatrix|q4-imatrix|pro-q2-imatrix)
+    ln -sfn "$MODEL_DIR/$main_file" "$MODEL_DIR/ds4flash.gguf"
+    echo "dwarfstar4-download-model: linked $MODEL_DIR/ds4flash.gguf -> $MODEL_DIR/$main_file"
+    ;;
+esac

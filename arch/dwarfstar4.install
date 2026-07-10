@@ -1,0 +1,28 @@
+post_install() {
+  cat <<'EOM'
+==> dwarfstar4 ROCm runtime notes
+  • /dev/kfd access requires your user in BOTH render and video groups:
+      sudo usermod -aG render,video "$USER"
+    then log out/in (or reboot).
+
+  • Verify ROCm sees your GPU and your groups are active:
+      rocminfo | grep -m1 gfx
+      groups | grep -E 'render|video'
+
+  • If your APU/GPU needs an override, try:
+      HSA_OVERRIDE_GFX_VERSION=11.0.0 ds4 -m ~/.local/share/models/ds4flash.gguf
+
+  • On systems with both iGPU and dGPU, pick a device at runtime with:
+      HIP_VISIBLE_DEVICES=0 ds4 ...
+      ROCR_VISIBLE_DEVICES=1 ds4 ...
+
+  • Models are expected in ~/.local/share/models (or $XDG_DATA_HOME/models).
+    Download the recommended Strix Halo Flash model with:
+      dwarfstar4-download-model q2-imatrix
+    The downloader skips files already present.
+EOM
+}
+
+post_upgrade() {
+  post_install
+}
