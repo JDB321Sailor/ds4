@@ -2,8 +2,8 @@
 
 This directory contains the `PKGBUILD` for the `dwarfstar4` package, an
 Arch Linux / CachyOS native packaging of
-[`antirez/ds4`](https://github.com/antirez/ds4) built for the ROCm /
-Strix Halo (`gfx1151`) backend.
+[`antirez/ds4`](https://github.com/antirez/ds4) built for the ROCm
+backend as a multi-arch fat binary.
 
 For the full system setup (ROCm install, Limine kernel parameters for the
 GTT aperture, etc.), see [`../CachyOS.md`](../CachyOS.md).
@@ -37,13 +37,20 @@ Docs land under `/usr/share/doc/dwarfstar4/` and the license under
   [`JDB321Sailor/ds4`](https://github.com/JDB321Sailor/ds4), the **source
   it builds** is always upstream. That keeps the package reproducible and
   decoupled from any fork-only changes.
-- Runs `make strix-halo -j"$(nproc)"` which uses `hipcc`, `gfx1151`, and
-  links against `hipblas` / `hipblaslt` / `rocblas` / `rocwmma`.
+- Runs `make strix-halo -j"$(nproc)"` which uses `hipcc`, ROCm offload
+  arch flags, and links against `hipblas` / `hipblaslt` / `rocblas` /
+  `rocwmma`.
+- Builds ROCm offload code for `gfx1100 gfx1151` by default (RX 7900 XTX +
+  Strix Halo). ROCm does not JIT-translate missing arch code objects at
+  runtime, so the target arch must be present in the binary.
 - Overrides `NATIVE_CPU_FLAG` to `-march=x86-64-v3` so the resulting
   package is portable across Zen 4 / Zen 5 boxes rather than locked to the
   exact build host.
 - Installs five binaries with `install -Dm755`, plus license and Markdown
   docs.
+- Installs model helpers:
+  - `/usr/share/dwarfstar4/download_model.sh` (upstream downloader)
+  - `/usr/bin/dwarfstar4-download-model` (package wrapper)
 
 ## Upgrading
 
@@ -71,18 +78,77 @@ before running `makepkg`:
 | Variable           | Default                  | Purpose |
 | ------------------ | ------------------------ | ------- |
 | `HIPCC`            | `/opt/rocm/bin/hipcc`    | Path to the HIP compiler. |
-| `ROCM_ARCH`        | `gfx1151`                | GPU offload arch. Set to `gfx1100` for an RX 7900 XTX build, etc. |
+| `ROCM_ARCH`        | `gfx1100 gfx1151`        | GPU offload arch list. Accepts space- or comma-separated values. |
 | `NATIVE_CPU_FLAG`  | `-march=x86-64-v3`       | CPU baseline. Use `-march=native` for a host-locked binary. |
 
-Example: build for the discrete RX 7900 XTX in the same box:
+Examples:
 
 ```sh
 ROCM_ARCH=gfx1100 makepkg -s -f
+ROCM_ARCH='gfx1100 gfx1151' makepkg -s -f
 ```
 
-(If you need both targets installed in parallel, fork this PKGBUILD into
-`dwarfstar4-gfx1100` with the appropriate `pkgname` / `conflicts` /
-`provides` adjustments.)
+`build()` logs the final ROCm arch list before compiling. If `rocminfo`
+cannot run during build (common in clean chroots), the PKGBUILD warns and
+falls back to `gfx1100 gfx1151`.
+
+## Runtime prerequisites and model setup
+
+ROCm access on Arch/CachyOS typically requires your user to be in both
+`render` and `video` groups:
+
+```sh
+sudo usermod -aG render,video "$USER"
+```
+
+Then log out/in (or reboot), and verify:
+
+```sh
+rocminfo | grep -m1 gfx
+groups | grep -E 'render|video'
+```
+
+If your APU/GPU needs an override, try:
+
+```sh
+HSA_OVERRIDE_GFX_VERSION=11.0.0 ds4 -m ~/.local/share/models/ds4flash.gguf
+```
+
+If you have both an iGPU and dGPU, select a specific runtime device with
+`HIP_VISIBLE_DEVICES` or `ROCR_VISIBLE_DEVICES`.
+
+### Model directory (`~/.local/share/models`)
+
+The package wrapper stores GGUF files in:
+
+`~/.local/share/models` (or `${XDG_DATA_HOME}/models` when `XDG_DATA_HOME`
+is set), so models from multiple projects can share one location.
+
+Recommended model download for Strix Halo + RX 7900 XTX:
+
+```sh
+dwarfstar4-download-model q2-imatrix
+```
+
+If the requested GGUF already exists in that folder, the wrapper prints an
+"already present, skipping" message and avoids re-downloading.
+
+The wrapper refreshes:
+
+`~/.local/share/models/ds4flash.gguf -> <selected model>`
+
+Run with an explicit path:
+
+```sh
+ds4 -m ~/.local/share/models/ds4flash.gguf
+```
+
+Or run from the model directory so DS4's default relative path resolves:
+
+```sh
+cd ~/.local/share/models
+ds4
+```
 
 ## Why a separate `dwarfstar4` name?
 

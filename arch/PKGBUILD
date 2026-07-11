@@ -38,7 +38,7 @@
 pkgname=dwarfstar4
 _upstream_name=ds4
 pkgver=0.r80ebbc3
-pkgrel=2
+pkgrel=3
 # Pinned upstream commit (antirez/ds4 main @ 2026-06-17). Update together
 # with pkgver when bumping.
 _commit=80ebbc396aee40eedc1d829222f3362d10fa4c6c
@@ -46,6 +46,7 @@ pkgdesc="DeepSeek 4 Flash & PRO local inference engine (ROCm, multi-arch: gfx110
 arch=('x86_64')
 url="https://github.com/antirez/ds4"
 license=('MIT')
+install=dwarfstar4.install
 
 # Runtime: HIP + the BLAS / WMMA libs the ROCm backend links against.
 # The Arch rocblas / hipblas / hipblaslt packages ship Tensile kernels for
@@ -97,8 +98,14 @@ options=(!strip !lto)
 
 source=(
   "${_upstream_name}::git+https://github.com/antirez/ds4.git#commit=${_commit}"
+  'dwarfstar4.install'
+  'dwarfstar4-download-model'
 )
-sha256sums=('SKIP')
+sha256sums=(
+  'SKIP'
+  'SKIP'
+  'SKIP'
+)
 
 pkgver() {
   cd "${srcdir}/${_upstream_name}"
@@ -112,31 +119,64 @@ pkgver() {
 #   every gfx* agent on the build host, otherwise falls back to the
 #   "gfx1100 gfx1151" pair (RX 7900 XTX + Strix Halo).
 _dwarfstar4_detect_arches() {
+  local _default_arches='gfx1100 gfx1151'
+
   if [ -n "${ROCM_ARCH:-}" ]; then
     # Allow either space- or comma-separated input.
-    printf '%s' "${ROCM_ARCH//,/ }"
+    local _override_arches
+    _override_arches="$(printf '%s\n' "${ROCM_ARCH//,/ }" | awk '{$1=$1; print}')"
+    msg2 "dwarfstar4: using ROCM_ARCH override: ${_override_arches}"
+    printf '%s' "${_override_arches}"
     return
   fi
 
   if command -v rocminfo >/dev/null 2>&1; then
-    local detected
-    detected="$(
-      rocminfo 2>/dev/null \
-        | awk '/Name:[[:space:]]+gfx[0-9a-fA-F]+/ {print $2}' \
-        | sort -u \
-        | tr '\n' ' '
-    )"
+    local _rocminfo_output _detected
+    if _rocminfo_output="$(rocminfo 2>/dev/null)"; then
+      _detected="$(
+        printf '%s\n' "${_rocminfo_output}" \
+          | awk '
+              BEGIN { gpu=0; name="" }
+              /^[[:space:]]*Agent[[:space:]]+[0-9]+/ {
+                if (gpu && name != "") print name
+                gpu=0
+                name=""
+                next
+              }
+              /^[[:space:]]*Type:[[:space:]]*GPU([[:space:]]|$)/ { gpu=1; next }
+              {
+                if ($0 ~ /^[[:space:]]*Name:[[:space:]]*gfx[0-9A-Fa-f]+[[:space:]]*$/) {
+                  _name=$0
+                  sub(/^[[:space:]]*Name:[[:space:]]*/, "", _name)
+                  sub(/[[:space:]]*$/, "", _name)
+                  name=tolower(_name)
+                }
+              }
+              END { if (gpu && name != "") print name }
+            ' \
+          | sort -u \
+          | tr '\n' ' '
+      )"
+    else
+      warning "dwarfstar4: rocminfo could not query GPU agents (often expected in clean chroots without /dev/kfd)."
+      _detected=""
+    fi
+
     # Trim trailing whitespace.
-    detected="${detected%[[:space:]]}"
-    if [ -n "$detected" ]; then
-      printf '%s' "$detected"
+    _detected="${_detected%[[:space:]]}"
+    if [ -n "${_detected}" ]; then
+      msg2 "dwarfstar4: auto-detected ROCm GPU arches: ${_detected}"
+      printf '%s' "${_detected}"
       return
     fi
+
+    warning "dwarfstar4: unable to auto-detect ROCm GPU arches from rocminfo output."
+  else
+    warning "dwarfstar4: rocminfo not found; auto-detection unavailable."
   fi
 
-  # Sensible default: the two architectures this PKGBUILD is documented
-  # to target. Anyone on hardware outside this set should pass ROCM_ARCH=.
-  printf '%s' 'gfx1100 gfx1151'
+  warning "dwarfstar4: falling back to default ROCM_ARCH=\"${_default_arches}\" (RX 7900 XTX + Strix Halo). Set ROCM_ARCH if your hardware differs."
+  printf '%s' "${_default_arches}"
 }
 
 build() {
@@ -162,7 +202,7 @@ build() {
   # Reconstruct the Makefile's ROCM_CFLAGS so we control --offload-arch
   # ourselves (the upstream Makefile only supports one arch via
   # ROCM_ARCH). Everything else here matches Makefile defaults.
-  local _rocm_cflags="-O3 -ffast-math -g -fno-finite-math-only -pthread \
+  local _rocm_cflags="-O3 -ffast-math -fno-finite-math-only -pthread \
 -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument \
 ${_offload_flags[*]}"
 
@@ -197,4 +237,16 @@ package() {
   # The model-download helper is handy to ship alongside the binaries.
   install -Dm755 download_model.sh \
     "${pkgdir}/usr/share/${pkgname}/download_model.sh"
+
+  # The upstream helper writes ./ds4flash.gguf relative to its script
+  # directory; in a packaged install that is /usr/share/${pkgname}. Patch it
+  # to write the convenience symlink into DS4_GGUF_DIR instead.
+  sed -i \
+    -e 's|cd "$ROOT"||' \
+    -e 's|ln -sfn "$OUT_DIR/$MODEL_FILE" ds4flash.gguf|ln -sfn "$OUT_DIR/$MODEL_FILE" "$OUT_DIR/ds4flash.gguf"|' \
+    -e 's|Linked ./ds4flash.gguf ->|Linked $OUT_DIR/ds4flash.gguf ->|' \
+    "${pkgdir}/usr/share/${pkgname}/download_model.sh"
+
+  install -Dm755 "${srcdir}/dwarfstar4-download-model" \
+    "${pkgdir}/usr/bin/dwarfstar4-download-model"
 }
