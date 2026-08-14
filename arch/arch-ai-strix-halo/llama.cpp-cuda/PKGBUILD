@@ -1,0 +1,56 @@
+# Maintainer: JDB321Sailor <https://github.com/JDB321Sailor>
+# llama.cpp built with the CUDA backend (Nvidia eGPU).
+# Tracks the latest upstream tag from github.com/ggml-org/llama.cpp.
+
+pkgname=llama.cpp-cuda
+pkgver=0  # overwritten by pkgver() at build time
+pkgrel=1
+pkgdesc="llama.cpp inference engine — CUDA backend (Nvidia GPU)"
+arch=('x86_64')
+url="https://github.com/ggml-org/llama.cpp"
+license=('MIT')
+
+depends=(
+  'cuda'
+)
+
+makedepends=(
+  'git'
+  'cmake'
+  'ninja'
+  'cuda'
+  'gcc'
+)
+
+provides=('llama.cpp')
+conflicts=('llama.cpp' 'llama.cpp-rocm')
+
+options=(!strip !lto)
+
+source=("llama.cpp::git+https://github.com/ggml-org/llama.cpp.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "${srcdir}/llama.cpp"
+  git describe --tags --abbrev=0 2>/dev/null \
+    | sed 's/^[bBvV]//' \
+    || printf 'r%s' "$(git rev-list --count HEAD)"
+}
+
+build() {
+  cd "${srcdir}/llama.cpp"
+
+  cmake -S . -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DGGML_CUDA=ON \
+    -DGGML_NATIVE=OFF
+
+  cmake --build build -- -j"$(nproc)"
+}
+
+package() {
+  cd "${srcdir}/llama.cpp"
+  DESTDIR="${pkgdir}" cmake --install build
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

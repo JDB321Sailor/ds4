@@ -1,0 +1,94 @@
+# Maintainer: JDB321Sailor <https://github.com/JDB321Sailor>
+# llama.cpp built with the ROCm/HIP backend (AMD iGPU + dGPU).
+# Tracks the latest upstream tag from github.com/ggml-org/llama.cpp.
+
+pkgname=llama.cpp-rocm
+pkgver=0  # overwritten by pkgver() at build time
+pkgrel=1
+pkgdesc="llama.cpp inference engine — ROCm/HIP backend (multi-arch fat binary)"
+arch=('x86_64')
+url="https://github.com/ggml-org/llama.cpp"
+license=('MIT')
+
+depends=(
+  'rocm-hip-runtime'
+  'rocblas'
+  'hipblas'
+  'hipblaslt'
+)
+
+makedepends=(
+  'git'
+  'cmake'
+  'ninja'
+  'rocm-hip-sdk'
+  'rocm-llvm'
+  'rocminfo'
+  'rocblas'
+  'hipblas'
+  'hipblaslt'
+)
+
+provides=('llama.cpp')
+conflicts=('llama.cpp' 'llama.cpp-cuda')
+
+options=(!strip !lto)
+
+source=("llama.cpp::git+https://github.com/ggml-org/llama.cpp.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "${srcdir}/llama.cpp"
+  # Use the most recent upstream tag (e.g. b5210), falling back to commit count.
+  git describe --tags --abbrev=0 2>/dev/null \
+    | sed 's/^[bBvV]//' \
+    || printf 'r%s' "$(git rev-list --count HEAD)"
+}
+
+_detect_arches() {
+  local _default='gfx1100 gfx1151'
+  [ -n "${ROCM_ARCH:-}" ] && { printf '%s' "${ROCM_ARCH//,/ }"; return; }
+  if command -v rocminfo >/dev/null 2>&1; then
+    local _det
+    _det="$(rocminfo 2>/dev/null \
+      | awk 'BEGIN{gpu=0;name=""}
+             /^[[:space:]]*Agent[[:space:]]+[0-9]+/{if(gpu&&name!="")print name;gpu=0;name="";next}
+             /^[[:space:]]*Type:[[:space:]]*GPU/{gpu=1;next}
+             {if($0~/^[[:space:]]*Name:[[:space:]]*gfx[0-9A-Fa-f]+[[:space:]]*$/){
+               n=$0;sub(/^[[:space:]]*Name:[[:space:]]*/,"",n);sub(/[[:space:]]*$/,"",n);name=tolower(n)}}
+             END{if(gpu&&name!="")print name}' \
+      | sort -u | tr '\n' ' ')"
+    _det="${_det%[[:space:]]}"
+    [ -n "$_det" ] && { printf '%s' "$_det"; return; }
+  fi
+  printf '%s' "$_default"
+}
+
+build() {
+  cd "${srcdir}/llama.cpp"
+
+  local _arches _arch _offload_flags=()
+  _arches="$(_detect_arches)"
+  for _arch in $_arches; do
+    _offload_flags+=("-DAMDGPU_TARGETS=${_arch}")
+  done
+  # CMake expects a semicolon-separated list for AMDGPU_TARGETS.
+  local _targets
+  _targets="$(printf '%s\n' $_arches | tr ' ' ';')"
+
+  cmake -S . -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DGGML_HIPBLAS=ON \
+    -DAMDGPU_TARGETS="${_targets}" \
+    -DCMAKE_HIP_COMPILER="$(hipconfig --hipclangpath)/clang++" \
+    -DGGML_NATIVE=OFF
+
+  cmake --build build -- -j"$(nproc)"
+}
+
+package() {
+  cd "${srcdir}/llama.cpp"
+  DESTDIR="${pkgdir}" cmake --install build
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
