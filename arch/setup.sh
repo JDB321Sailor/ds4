@@ -17,6 +17,43 @@ _ask_yn() {
     echo "${_ans,,:-$_default}"
 }
 
+# Load the environment installed by Arch's CUDA package into this process.
+_prepare_cuda_environment() {
+    local _cuda_profile="/etc/profile.d/cuda.sh"
+
+    if [[ ! -r "$_cuda_profile" ]]; then
+        echo "  ERROR: CUDA profile not found at ${_cuda_profile}." >&2
+        return 1
+    fi
+
+    set +u
+    # shellcheck source=/dev/null
+    if ! source "$_cuda_profile"; then
+        set -u
+        echo "  ERROR: Failed to load ${_cuda_profile}." >&2
+        return 1
+    fi
+    set -u
+
+    export CUDAToolkit_ROOT="${CUDA_PATH:-/opt/cuda}"
+    export PATH="${CUDAToolkit_ROOT}/bin:${PATH}"
+
+    if [[ ! -x "${CUDAToolkit_ROOT}/bin/nvcc" ]] \
+        || ! nvcc --version >/dev/null 2>&1; then
+        echo "  ERROR: CUDA compiler is not usable at ${CUDAToolkit_ROOT}/bin/nvcc." >&2
+        return 1
+    fi
+    if [[ -n "${NVCC_CCBIN:-}" ]] && ! command -v "$NVCC_CCBIN" >/dev/null 2>&1; then
+        echo "  ERROR: CUDA host compiler is not available: ${NVCC_CCBIN}" >&2
+        return 1
+    fi
+
+    echo "  CUDA compiler: $(command -v nvcc)"
+    if [[ -n "${NVCC_CCBIN:-}" ]]; then
+        echo "  CUDA host compiler: ${NVCC_CCBIN}"
+    fi
+}
+
 # Return the pkgver string a PKGBUILD directory will produce by running
 # makepkg --printsrcinfo is slow; instead call pkgver() directly via sourcing.
 # We only need the pkgname here (for glob matching).
@@ -73,7 +110,7 @@ _build_llama() {
     echo ""
     echo "Building ${_label} …"
 
-    local _existing
+    local _existing _status
     _existing="$(_existing_pkgs "${_dir}")"
 
     if [[ -n "$_existing" ]]; then
@@ -93,8 +130,14 @@ _build_llama() {
     touch "${_dir}/PKGBUILD"
 
     pushd "${_dir}" > /dev/null
-    makepkg -s --noconfirm
-    popd > /dev/null
+    if makepkg -s --noconfirm; then
+        popd > /dev/null
+    else
+        _status=$?
+        popd > /dev/null
+        echo "  ERROR: Failed to build ${_label} in ${_dir}." >&2
+        return "$_status"
+    fi
 
     _offer_cleanup "${_dir}" "${_label}"
 }
@@ -215,6 +258,10 @@ else
 fi
 
 sudo pacman -Syu --needed --noconfirm "${_gpu_build_packages[@]}"
+
+if ${_has_nvidia}; then
+    _prepare_cuda_environment
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 5 — Display visible GPUs

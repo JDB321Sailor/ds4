@@ -40,9 +40,19 @@ pkgver() {
 build() {
   cd "${srcdir}/llama.cpp"
 
+  local _cuda_root="${CUDAToolkit_ROOT:-${CUDA_PATH:-/opt/cuda}}"
+  local _cuda_compiler="${_cuda_root}/bin/nvcc"
+  if [[ ! -x "${_cuda_compiler}" ]]; then
+    printf 'ERROR: CUDA compiler not found at %s\n' "${_cuda_compiler}" >&2
+    return 1
+  fi
+  export PATH="${_cuda_root}/bin:${PATH}"
+
   cmake -S . -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCUDAToolkit_ROOT="${_cuda_root}" \
+    -DCMAKE_CUDA_COMPILER="${_cuda_compiler}" \
     -DGGML_CUDA=ON \
     -DGGML_NATIVE=OFF
 
