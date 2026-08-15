@@ -22,6 +22,7 @@ makedepends=(
   'cmake'
   'ninja'
   'rocm-hip-sdk'
+  'hip-runtime-amd'
   'rocm-llvm'
   'rocminfo'
   'rocblas'
@@ -43,6 +44,22 @@ pkgver() {
   git describe --tags --abbrev=0 2>/dev/null \
     | sed 's/^[bBvV]//' \
     || printf 'r%s' "$(git rev-list --count HEAD)"
+}
+
+# Print the ROCm prefix that ships the HIP headers. Arch installs them under
+# /opt/rocm, which is only added to PATH by /etc/profile.d/rocm.sh in new
+# login shells — so hipconfig/rocminfo are invisible right after installing
+# the ROCm packages unless we resolve the prefix ourselves.
+_rocm_prefix() {
+  local _candidate
+  for _candidate in "${ROCM_PATH:-}" "${HIP_PATH:-}" /opt/rocm /usr; do
+    [ -n "${_candidate}" ] || continue
+    if [ -r "${_candidate}/include/hip/hip_runtime.h" ]; then
+      printf '%s' "${_candidate}"
+      return 0
+    fi
+  done
+  return 1
 }
 
 _detect_arches() {
@@ -67,6 +84,23 @@ _detect_arches() {
 build() {
   cd "${srcdir}/llama.cpp"
 
+  local _prefix
+  if ! _prefix="$(_rocm_prefix)"; then
+    error "llama.cpp-rocm: HIP headers (include/hip/hip_runtime.h) not found in \$ROCM_PATH, \$HIP_PATH, /opt/rocm or /usr."
+    error "llama.cpp-rocm: install them with 'pacman -S --needed rocm-hip-sdk hip-runtime-amd', or set ROCM_PATH to your ROCm prefix."
+    return 1
+  fi
+
+  export ROCM_PATH="${_prefix}"
+  export HIP_PATH="${_prefix}"
+  export PATH="${_prefix}/bin:${PATH}"
+
+  # hipconfig is in ${_prefix}/bin, which is now on PATH; keep the standard
+  # ROCm layout as a fallback in case hipconfig is unavailable.
+  local _hip_clang_path
+  _hip_clang_path="$(hipconfig --hipclangpath 2>/dev/null || true)"
+  [ -n "${_hip_clang_path}" ] || _hip_clang_path="${_prefix}/lib/llvm/bin"
+
   local _arches _arch _offload_flags=()
   _arches="$(_detect_arches)"
   for _arch in $_arches; do
@@ -81,7 +115,7 @@ build() {
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DGGML_HIPBLAS=ON \
     -DAMDGPU_TARGETS="${_targets}" \
-    -DCMAKE_HIP_COMPILER="$(hipconfig --hipclangpath)/clang++" \
+    -DCMAKE_HIP_COMPILER="${_hip_clang_path}/clang++" \
     -DGGML_NATIVE=OFF
 
   cmake --build build -- -j"$(nproc)"

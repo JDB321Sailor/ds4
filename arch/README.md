@@ -77,7 +77,8 @@ before running `makepkg`:
 
 | Variable           | Default                  | Purpose |
 | ------------------ | ------------------------ | ------- |
-| `HIPCC`            | `/opt/rocm/bin/hipcc`    | Path to the HIP compiler. |
+| `ROCM_PATH`        | first of `$ROCM_PATH`, `$HIP_PATH`, `/opt/rocm`, `/usr` that contains `include/hip/hip_runtime.h` | ROCm prefix. `build()` exports it (plus `HIP_PATH`), prepends `<prefix>/bin` to `PATH` and passes `--rocm-path` to `hipcc`. |
+| `HIPCC`            | `<ROCm prefix>/bin/hipcc` | Path to the HIP compiler. |
 | `ROCM_ARCH`        | `gfx1100 gfx1151`        | GPU offload arch list. Accepts space- or comma-separated values. |
 | `NATIVE_CPU_FLAG`  | `-march=x86-64-v3`       | CPU baseline. Use `-march=native` for a host-locked binary. |
 
@@ -91,6 +92,29 @@ ROCM_ARCH='gfx1100 gfx1151' makepkg -s -f
 `build()` logs the final ROCm arch list before compiling. If `rocminfo`
 cannot run during build (common in clean chroots), the PKGBUILD warns and
 falls back to `gfx1100 gfx1151`.
+
+### `fatal error: 'hip/hip_runtime.h' file not found`
+
+Arch installs the whole ROCm stack under `/opt/rocm`, and only
+`/etc/profile.d/rocm.sh` puts `/opt/rocm/bin` on `PATH` — in *new* login
+shells. A shell that has just installed ROCm therefore sees no `rocminfo` /
+`hipconfig`, and a missing or stale `HIP_PATH` makes `hipcc`'s clang look
+for the HIP headers in the wrong prefix.
+
+`build()` resolves and pins that prefix itself, so `makepkg -s` works in a
+freshly-installed session. If your ROCm lives somewhere else, point the
+build at it explicitly:
+
+```sh
+ROCM_PATH=/path/to/rocm makepkg -s -f
+```
+
+If the headers are missing altogether, the build stops early and tells you
+to install them:
+
+```sh
+sudo pacman -S --needed rocm-hip-sdk hip-runtime-amd
+```
 
 ## Runtime prerequisites and model setup
 
