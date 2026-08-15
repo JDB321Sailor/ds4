@@ -61,7 +61,8 @@ depends=(
   'rocwmma'
 )
 
-# Build: hipcc + HIP/ROCm headers (rocm-hip-sdk provides hipcc), and the
+# Build: hipcc + HIP/ROCm headers (rocm-hip-sdk provides hipcc, and
+# hip-runtime-amd the hip/*.h headers hipcc compiles against), and the
 # usual base-devel chain. `git` is needed by the VCS source line. We pull
 # in `rocminfo` at build time so build() can auto-detect the host's AMD
 # GPU arches.
@@ -70,6 +71,7 @@ makedepends=(
   'make'
   'gcc'
   'rocm-hip-sdk'
+  'hip-runtime-amd'
   'rocm-llvm'
   'rocminfo'
   'rocwmma'
@@ -118,6 +120,8 @@ pkgver() {
 #   Honors $ROCM_ARCH (override), otherwise uses `rocminfo` to enumerate
 #   every gfx* agent on the build host, otherwise falls back to the
 #   "gfx1100 gfx1151" pair (RX 7900 XTX + Strix Halo).
+#   Progress messages go to stderr: stdout is captured by the caller and must
+#   contain the arch list only.
 _dwarfstar4_detect_arches() {
   local _default_arches='gfx1100 gfx1151'
 
@@ -125,7 +129,7 @@ _dwarfstar4_detect_arches() {
     # Allow either space- or comma-separated input.
     local _override_arches
     _override_arches="$(printf '%s\n' "${ROCM_ARCH//,/ }" | awk '{$1=$1; print}')"
-    msg2 "dwarfstar4: using ROCM_ARCH override: ${_override_arches}"
+    msg2 "dwarfstar4: using ROCM_ARCH override: ${_override_arches}" >&2
     printf '%s' "${_override_arches}"
     return
   fi
@@ -165,7 +169,7 @@ _dwarfstar4_detect_arches() {
     # Trim trailing whitespace.
     _detected="${_detected%[[:space:]]}"
     if [ -n "${_detected}" ]; then
-      msg2 "dwarfstar4: auto-detected ROCm GPU arches: ${_detected}"
+      msg2 "dwarfstar4: auto-detected ROCm GPU arches: ${_detected}" >&2
       printf '%s' "${_detected}"
       return
     fi
@@ -179,12 +183,50 @@ _dwarfstar4_detect_arches() {
   printf '%s' "${_default_arches}"
 }
 
+# _dwarfstar4_rocm_prefix:
+#   Print the ROCm/HIP installation prefix that actually ships the HIP
+#   headers. Arch keeps them under /opt/rocm, which is only added to PATH by
+#   /etc/profile.d/rocm.sh in new login shells; a stale or unset
+#   HIP_PATH / ROCM_PATH makes hipcc's clang look elsewhere and the build
+#   dies with "fatal error: 'hip/hip_runtime.h' file not found".
+_dwarfstar4_rocm_prefix() {
+  local _candidate
+  for _candidate in "${ROCM_PATH:-}" "${HIP_PATH:-}" /opt/rocm /usr; do
+    [ -n "${_candidate}" ] || continue
+    if [ -r "${_candidate}/include/hip/hip_runtime.h" ]; then
+      printf '%s' "${_candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 build() {
   cd "${srcdir}/${_upstream_name}"
 
+  # Resolve the ROCm prefix first: hipcc, hipconfig and rocminfo all live in
+  # ${prefix}/bin, and hipcc's clang derives the HIP include/library
+  # directories from HIP_PATH / ROCM_PATH.
+  local _rocm_prefix
+  if ! _rocm_prefix="$(_dwarfstar4_rocm_prefix)"; then
+    error "dwarfstar4: HIP headers (include/hip/hip_runtime.h) not found in \$ROCM_PATH, \$HIP_PATH, /opt/rocm or /usr."
+    error "dwarfstar4: install them with 'pacman -S --needed rocm-hip-sdk hip-runtime-amd', or set ROCM_PATH to your ROCm prefix."
+    return 1
+  fi
+
+  export ROCM_PATH="${_rocm_prefix}"
+  export HIP_PATH="${_rocm_prefix}"
+  export PATH="${_rocm_prefix}/bin:${PATH}"
+  msg2 "dwarfstar4: using ROCm prefix: ${_rocm_prefix}"
+
   # Use the system hipcc (Arch installs to /opt/rocm/bin/hipcc) and the
   # auto-detected (or user-overridden) offload arch list.
-  export HIPCC="${HIPCC:-/opt/rocm/bin/hipcc}"
+  export HIPCC="${HIPCC:-${_rocm_prefix}/bin/hipcc}"
+  if [ ! -x "${HIPCC}" ]; then
+    error "dwarfstar4: HIP compiler not executable: ${HIPCC}"
+    error "dwarfstar4: install it with 'pacman -S --needed rocm-hip-sdk', or point HIPCC at your hipcc."
+    return 1
+  fi
 
   local _arches _arch _offload_flags=()
   _arches="$(_dwarfstar4_detect_arches)"
@@ -201,10 +243,11 @@ build() {
 
   # Reconstruct the Makefile's ROCM_CFLAGS so we control --offload-arch
   # ourselves (the upstream Makefile only supports one arch via
-  # ROCM_ARCH). Everything else here matches Makefile defaults.
+  # ROCM_ARCH). Everything else here matches Makefile defaults, plus an
+  # explicit --rocm-path so clang never has to guess where ROCm lives.
   local _rocm_cflags="-O3 -ffast-math -fno-finite-math-only -pthread \
 -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument \
-${_offload_flags[*]}"
+--rocm-path=${_rocm_prefix} ${_offload_flags[*]}"
 
   # Build the ROCm / Strix Halo target. This produces ds4, ds4-server,
   # ds4-bench, ds4-eval, ds4-agent in the source tree. We pass our

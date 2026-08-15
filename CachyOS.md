@@ -35,6 +35,7 @@ sudo pacman -Syu
 sudo pacman -S --needed \
   rocm-hip-sdk \
   rocm-hip-runtime \
+  hip-runtime-amd \
   rocm-llvm \
   rocminfo \
   rocm-smi-lib \
@@ -48,7 +49,16 @@ Notes:
 
 - `rocm-hip-sdk` is the metapackage that pulls in `hipcc`, the HIP headers
   and `hip-runtime-amd`. It is the Arch equivalent of Ubuntu's
-  `hipcc` + `libamdhip64-dev` + `libhip*-dev` combination.
+  `hipcc` + `libamdhip64-dev` + `libhip*-dev` combination. `hip-runtime-amd`
+  is listed explicitly because it owns `hipcc` and
+  `/opt/rocm/include/hip/hip_runtime.h`, the header the ROCm build fails on
+  when it is absent.
+- Everything lands in `/opt/rocm`, which is added to `PATH` by
+  `/etc/profile.d/rocm.sh` — but only for shells started *after* the
+  install. In the shell that installed ROCm, either open a new one, run
+  `source /etc/profile.d/rocm.sh`, or use
+  [`arch/setup.sh`](arch/setup.sh), which prepares the ROCm environment for
+  its own build steps.
 - `rocwmma` on Arch installs the **complete** rocWMMA header tree under
   `/usr/include/rocwmma/` (including `rocwmma/internal/`). You do **not**
   need the manual `git clone` workaround that the Ubuntu guide describes.
@@ -281,6 +291,15 @@ The build runs `make strix-halo -j$(nproc)`. On a 32-thread Ryzen AI MAX+
 ```text
 dwarfstar4-<version>-1-x86_64.pkg.tar.zst
 ```
+
+If the build stops with `fatal error: 'hip/hip_runtime.h' file not found`,
+your shell was started before ROCm was installed, so `/opt/rocm/bin` is not
+on `PATH` and `HIP_PATH` is unset or stale. The PKGBUILD pins the ROCm
+prefix itself, so re-running `makepkg -s` with the current
+[`arch/PKGBUILD`](arch/PKGBUILD) is enough; for a ROCm install outside
+`/opt/rocm`, build with `ROCM_PATH=/path/to/rocm makepkg -s`. If the HIP
+headers are genuinely missing, install them with
+`sudo pacman -S --needed rocm-hip-sdk hip-runtime-amd`.
 
 ### 4.3. Install with pacman
 

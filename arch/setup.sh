@@ -54,6 +54,71 @@ _prepare_cuda_environment() {
     fi
 }
 
+# Print the ROCm/HIP prefix that actually ships the HIP headers.
+# Honors an existing ROCM_PATH / HIP_PATH, then falls back to the Arch
+# location (/opt/rocm) and finally to a /usr-based ROCm install.
+_rocm_prefix() {
+    local _candidate
+    for _candidate in "${ROCM_PATH:-}" "${HIP_PATH:-}" /opt/rocm /usr; do
+        [[ -n "$_candidate" ]] || continue
+        if [[ -r "${_candidate}/include/hip/hip_runtime.h" ]]; then
+            printf '%s' "$_candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Load the environment installed by Arch's ROCm packages into this process.
+# Arch keeps the whole ROCm stack under /opt/rocm and only adds it to PATH
+# through /etc/profile.d/rocm.sh, which is read by *new* login shells — so a
+# session that just installed ROCm sees neither rocminfo/hipconfig nor a
+# pinned HIP_PATH, and hipcc's clang then fails with
+# "fatal error: 'hip/hip_runtime.h' file not found".
+_prepare_rocm_environment() {
+    local _rocm_profile="/etc/profile.d/rocm.sh"
+
+    if [[ -r "$_rocm_profile" ]]; then
+        set +u
+        # shellcheck source=/dev/null
+        if ! source "$_rocm_profile"; then
+            set -u
+            echo "  ERROR: Failed to load ${_rocm_profile}." >&2
+            return 1
+        fi
+        set -u
+    fi
+
+    local _prefix
+    if ! _prefix="$(_rocm_prefix)"; then
+        echo "  ERROR: HIP headers (include/hip/hip_runtime.h) were not found in" >&2
+        echo "         \$ROCM_PATH, \$HIP_PATH, /opt/rocm or /usr." >&2
+        echo "         Install them with: sudo pacman -S --needed rocm-hip-sdk hip-runtime-amd" >&2
+        return 1
+    fi
+
+    # Pin the prefix for every child process (makepkg, hipcc, cmake): hipcc's
+    # clang resolves the HIP include and library directories from these.
+    export ROCM_PATH="$_prefix"
+    export HIP_PATH="$_prefix"
+    export PATH="${_prefix}/bin:${PATH}"
+
+    if ! command -v hipcc >/dev/null 2>&1; then
+        echo "  ERROR: hipcc not found in ${_prefix}/bin." >&2
+        echo "         Install it with: sudo pacman -S --needed rocm-hip-sdk" >&2
+        return 1
+    fi
+    export HIPCC="${HIPCC:-$(command -v hipcc)}"
+
+    echo "  ROCm prefix: ${ROCM_PATH}"
+    echo "  HIP compiler: ${HIPCC}"
+    if command -v rocminfo >/dev/null 2>&1; then
+        echo "  rocminfo: $(command -v rocminfo)"
+    else
+        echo "  rocminfo: not found — GPU arch auto-detection falls back to defaults."
+    fi
+}
+
 # Return the pkgver string a PKGBUILD directory will produce by running
 # makepkg --printsrcinfo is slow; instead call pkgver() directly via sourcing.
 # We only need the pkgname here (for glob matching).
@@ -214,6 +279,7 @@ _header "Step 2: Installing AMD HIP/ROCm stack"
 sudo pacman -Syu --needed --noconfirm \
     rocm-hip-sdk \
     rocm-hip-runtime \
+    hip-runtime-amd \
     rocm-llvm \
     rocminfo \
     rocm-smi-lib \
@@ -221,6 +287,11 @@ sudo pacman -Syu --needed --noconfirm \
     hipblas \
     hipblaslt \
     rocwmma
+
+# The packages above install under /opt/rocm, which is not on PATH in the
+# shell that installed them. Make hipcc, hipconfig, rocminfo and the HIP
+# headers usable for the builds in Step 7 and Step 9 of this same run.
+_prepare_rocm_environment
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 3 — Detect and install Nvidia drivers via cachyos chwd
