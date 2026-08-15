@@ -403,15 +403,20 @@ _header "Step 7: Building llama.cpp packages"
 
 # On a rerun, offer to switch vs. build new.
 _do_build_llama=true
+_skip_llama=false
 if ${_rerun}; then
     echo ""
     echo "  A llama.cpp backend is already installed: ${_currently_installed_llama}"
     echo "  What would you like to do?"
     echo "    new    — build fresh packages (all three backends)"
     echo "    switch — only choose a different backend to install (skip rebuild)"
-    read -rp "  Enter 'new' or 'switch': " _rerun_mode
+    echo "    skip   — keep the current install and skip building any new packages"
+    read -rp "  Enter 'new', 'switch', or 'skip': " _rerun_mode
     if [[ "${_rerun_mode,,}" == "switch" ]]; then
         _do_build_llama=false
+    elif [[ "${_rerun_mode,,}" == "skip" ]]; then
+        _do_build_llama=false
+        _skip_llama=true
     fi
 fi
 
@@ -441,42 +446,47 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 _header "Step 8: llama.cpp backend selection"
 echo ""
-echo "  Which llama.cpp backend would you like to install?"
-echo "    1) ROCm   — AMD iGPU / dGPU (llama.cpp-rocm)"
-if ${_has_nvidia}; then
-    echo "    2) CUDA   — Nvidia eGPU     (llama.cpp-cuda)"
+if ${_skip_llama}; then
+    _installed_backend="${_currently_installed_llama}"
+    echo "  Keeping the currently installed backend: ${_installed_backend}"
 else
-    echo "    2) CUDA   — unavailable (no Nvidia GPU detected)"
-fi
-echo "    3) Vulkan — any Vulkan GPU  (llama.cpp-vulkan)"
-echo "    4) None   — skip installation"
-read -rp "  Enter 1, 2, 3, or 4: " _backend_choice
+    echo "  Which llama.cpp backend would you like to install?"
+    echo "    1) ROCm   — AMD iGPU / dGPU (llama.cpp-rocm)"
+    if ${_has_nvidia}; then
+        echo "    2) CUDA   — Nvidia eGPU     (llama.cpp-cuda)"
+    else
+        echo "    2) CUDA   — unavailable (no Nvidia GPU detected)"
+    fi
+    echo "    3) Vulkan — any Vulkan GPU  (llama.cpp-vulkan)"
+    echo "    4) None   — skip installation"
+    read -rp "  Enter 1, 2, 3, or 4: " _backend_choice
 
-_installed_backend="(none)"
-case "${_backend_choice}" in
-    1)
-        _install_pkg "${LLAMA_BUILD_DIR}/llama.cpp-rocm"   "llama.cpp-rocm"
-        _installed_backend="llama.cpp-rocm"
-        ;;
-    2)
-        if ${_has_nvidia}; then
-            _install_pkg "${LLAMA_BUILD_DIR}/llama.cpp-cuda" "llama.cpp-cuda"
-            _installed_backend="llama.cpp-cuda"
-        else
-            echo "  CUDA backend unavailable — no Nvidia GPU was detected."
-        fi
-        ;;
-    3)
-        _install_pkg "${LLAMA_BUILD_DIR}/llama.cpp-vulkan" "llama.cpp-vulkan"
-        _installed_backend="llama.cpp-vulkan"
-        ;;
-    4)
-        echo "  Skipping llama.cpp installation."
-        ;;
-    *)
-        echo "  Invalid choice — skipping llama.cpp installation."
-        ;;
-esac
+    _installed_backend="(none)"
+    case "${_backend_choice}" in
+        1)
+            _install_pkg "${LLAMA_BUILD_DIR}/llama.cpp-rocm"   "llama.cpp-rocm"
+            _installed_backend="llama.cpp-rocm"
+            ;;
+        2)
+            if ${_has_nvidia}; then
+                _install_pkg "${LLAMA_BUILD_DIR}/llama.cpp-cuda" "llama.cpp-cuda"
+                _installed_backend="llama.cpp-cuda"
+            else
+                echo "  CUDA backend unavailable — no Nvidia GPU was detected."
+            fi
+            ;;
+        3)
+            _install_pkg "${LLAMA_BUILD_DIR}/llama.cpp-vulkan" "llama.cpp-vulkan"
+            _installed_backend="llama.cpp-vulkan"
+            ;;
+        4)
+            echo "  Skipping llama.cpp installation."
+            ;;
+        *)
+            echo "  Invalid choice — skipping llama.cpp installation."
+            ;;
+    esac
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 9 — Build dwarfstar4 (ds4 ROCm package)
