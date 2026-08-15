@@ -21,6 +21,7 @@ makedepends=(
   'ninja'
   'vulkan-headers'
   'shaderc'
+  'spirv-headers'
 )
 
 provides=('llama.cpp')

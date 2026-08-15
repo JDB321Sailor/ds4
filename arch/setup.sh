@@ -130,7 +130,7 @@ _build_llama() {
     touch "${_dir}/PKGBUILD"
 
     pushd "${_dir}" > /dev/null
-    if makepkg -s --noconfirm; then
+    if makepkg -s --force --noconfirm; then
         popd > /dev/null
     else
         _status=$?
@@ -146,14 +146,18 @@ _build_llama() {
 # $1 = build dir, $2 = package name (used for pacman -U glob)
 _install_pkg() {
     local _dir="$1" _pkgname="$2"
-    local _pkg
-    _pkg="$(find "${_dir}" -maxdepth 1 -name "${_pkgname}-*.pkg.tar.zst" | sort | tail -1)"
+    local _pkg="" _candidate
+    while IFS= read -r -d '' _candidate; do
+        if [[ -z "$_pkg" || "$_candidate" -nt "$_pkg" ]]; then
+            _pkg="$_candidate"
+        fi
+    done < <(find "${_dir}" -maxdepth 1 -name "${_pkgname}-*.pkg.tar.zst" -print0)
     if [[ -z "$_pkg" ]]; then
         echo "  ERROR: No built package found for ${_pkgname} in ${_dir}" >&2
         return 1
     fi
     echo "  Installing: $(basename "$_pkg")"
-    sudo pacman -U --noconfirm "$_pkg"
+    sudo pacman -U "$_pkg"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -246,6 +250,7 @@ _gpu_build_packages=(
     vulkan-headers
     vulkan-icd-loader
     shaderc
+    spirv-headers
 )
 if ${_has_nvidia}; then
     _gpu_build_packages=(
@@ -423,7 +428,7 @@ fi
 if ${_do_build_dw4}; then
     touch "${SCRIPT_DIR}/PKGBUILD"
     pushd "${SCRIPT_DIR}" > /dev/null
-    makepkg -s --noconfirm
+    makepkg -s --force --noconfirm
     popd > /dev/null
     _offer_cleanup "${SCRIPT_DIR}" "dwarfstar4"
 fi
