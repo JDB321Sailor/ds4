@@ -30,7 +30,7 @@ makedepends=(
 )
 
 provides=('llama.cpp')
-conflicts=('llama.cpp' 'llama.cpp-cuda')
+conflicts=('llama.cpp' 'llama.cpp-cuda' 'llama.cpp-vulkan')
 
 options=(!strip !lto)
 

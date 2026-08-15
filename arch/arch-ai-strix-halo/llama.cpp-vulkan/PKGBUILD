@@ -1,29 +1,31 @@
 # Maintainer: JDB321Sailor <https://github.com/JDB321Sailor>
-# llama.cpp built with the CUDA backend (Nvidia eGPU).
+# llama.cpp built with the Vulkan backend (vendor-agnostic GPU compute).
 # Tracks the latest upstream tag from github.com/ggml-org/llama.cpp.
 
-pkgname=llama.cpp-cuda
+pkgname=llama.cpp-vulkan
 pkgver=0  # overwritten by pkgver() at build time
 pkgrel=1
-pkgdesc="llama.cpp inference engine — CUDA backend (Nvidia GPU)"
+pkgdesc="llama.cpp inference engine — Vulkan backend (AMD / Nvidia / any Vulkan-capable GPU)"
 arch=('x86_64')
 url="https://github.com/ggml-org/llama.cpp"
 license=('MIT')
 
 depends=(
-  'cuda'
+  'vulkan-icd-loader'
+  'vulkan-driver'
 )
 
 makedepends=(
   'git'
   'cmake'
   'ninja'
-  'cuda'
-  'gcc'
+  'vulkan-headers'
+  'glslc'
+  'shaderc'
 )
 
 provides=('llama.cpp')
-conflicts=('llama.cpp' 'llama.cpp-rocm' 'llama.cpp-vulkan')
+conflicts=('llama.cpp' 'llama.cpp-rocm' 'llama.cpp-cuda')
 
 options=(!strip !lto)
 
@@ -43,7 +45,7 @@ build() {
   cmake -S . -B build -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr \
-    -DGGML_CUDA=ON \
+    -DGGML_VULKAN=ON \
     -DGGML_NATIVE=OFF
 
   cmake --build build -- -j"$(nproc)"
