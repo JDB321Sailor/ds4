@@ -179,20 +179,42 @@ sudo pacman -Syu --needed --noconfirm \
 # Step 3 — Detect and install Nvidia drivers via cachyos chwd
 # ─────────────────────────────────────────────────────────────────────────────
 _header "Step 3: Detecting and installing Nvidia drivers via chwd"
-sudo chwd -a
+
+_has_nvidia=false
+if command -v lspci >/dev/null 2>&1 \
+    && LC_ALL=C lspci -Dn 2>/dev/null \
+        | grep -qE '[[:space:]](0300|0302|0380):[[:space:]]+10de:'; then
+    _has_nvidia=true
+fi
+
+if ${_has_nvidia}; then
+    echo "  Nvidia GPU detected — installing the recommended CachyOS driver profile."
+    sudo chwd -a
+else
+    echo "  No Nvidia GPU detected — skipping Nvidia driver installation."
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 4 — Install CUDA and Vulkan build packages
 # ─────────────────────────────────────────────────────────────────────────────
 _header "Step 4: Installing CUDA and Vulkan build packages"
-sudo pacman -Syu --needed --noconfirm \
-    cuda \
-    cuda-tools \
-    cudnn \
-    vulkan-headers \
-    vulkan-icd-loader \
-    glslc \
+
+_gpu_build_packages=(
+    vulkan-headers
+    vulkan-icd-loader
     shaderc
+)
+if ${_has_nvidia}; then
+    _gpu_build_packages=(
+        cuda
+        cudnn
+        "${_gpu_build_packages[@]}"
+    )
+else
+    echo "  No Nvidia GPU detected — skipping CUDA packages."
+fi
+
+sudo pacman -Syu --needed --noconfirm "${_gpu_build_packages[@]}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 5 — Display visible GPUs
@@ -221,10 +243,14 @@ lspci -nn | grep -iE 'VGA|Display|3D|AMD' || echo "  (none found)"
 
 echo ""
 echo "── Nvidia (nvidia-smi) ──"
-if command -v nvidia-smi >/dev/null 2>&1; then
-    nvidia-smi --query-gpu=index,name,uuid \
+if ! ${_has_nvidia}; then
+    echo "  No Nvidia GPU detected."
+elif command -v nvidia-smi >/dev/null 2>&1; then
+    if ! nvidia-smi --query-gpu=index,name,uuid \
         --format=csv,noheader \
-        | awk -F', ' '{printf "  GPU %s: %s\n", $1, $2}'
+        | awk -F', ' '{printf "  GPU %s: %s\n", $1, $2}'; then
+        echo "  nvidia-smi could not query the detected Nvidia GPU."
+    fi
 else
     echo "  nvidia-smi not available — Nvidia driver may not be installed yet."
 fi
@@ -248,7 +274,7 @@ sudo pacman -Syu --needed --noconfirm \
     pkgconf
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Step 7 — Build all three llama.cpp backends
+# Step 7 — Build available llama.cpp backends
 # ─────────────────────────────────────────────────────────────────────────────
 _header "Step 7: Building llama.cpp packages"
 
@@ -269,9 +295,14 @@ fi
 LLAMA_BUILD_DIR="${SCRIPT_DIR}/arch-ai-strix-halo"
 
 if ${_do_build_llama}; then
-    echo ""
-    echo "  Step 7a: llama.cpp-cuda"
-    _build_llama "llama.cpp-cuda"   "${LLAMA_BUILD_DIR}/llama.cpp-cuda"
+    if ${_has_nvidia}; then
+        echo ""
+        echo "  Step 7a: llama.cpp-cuda"
+        _build_llama "llama.cpp-cuda" "${LLAMA_BUILD_DIR}/llama.cpp-cuda"
+    else
+        echo ""
+        echo "  Step 7a: llama.cpp-cuda — skipped (no Nvidia GPU detected)"
+    fi
 
     echo ""
     echo "  Step 7b: llama.cpp-rocm"
@@ -289,7 +320,11 @@ _header "Step 8: llama.cpp backend selection"
 echo ""
 echo "  Which llama.cpp backend would you like to install?"
 echo "    1) ROCm   — AMD iGPU / dGPU (llama.cpp-rocm)"
-echo "    2) CUDA   — Nvidia eGPU     (llama.cpp-cuda)"
+if ${_has_nvidia}; then
+    echo "    2) CUDA   — Nvidia eGPU     (llama.cpp-cuda)"
+else
+    echo "    2) CUDA   — unavailable (no Nvidia GPU detected)"
+fi
 echo "    3) Vulkan — any Vulkan GPU  (llama.cpp-vulkan)"
 echo "    4) None   — skip installation"
 read -rp "  Enter 1, 2, 3, or 4: " _backend_choice
@@ -301,8 +336,12 @@ case "${_backend_choice}" in
         _installed_backend="llama.cpp-rocm"
         ;;
     2)
-        _install_pkg "${LLAMA_BUILD_DIR}/llama.cpp-cuda"   "llama.cpp-cuda"
-        _installed_backend="llama.cpp-cuda"
+        if ${_has_nvidia}; then
+            _install_pkg "${LLAMA_BUILD_DIR}/llama.cpp-cuda" "llama.cpp-cuda"
+            _installed_backend="llama.cpp-cuda"
+        else
+            echo "  CUDA backend unavailable — no Nvidia GPU was detected."
+        fi
         ;;
     3)
         _install_pkg "${LLAMA_BUILD_DIR}/llama.cpp-vulkan" "llama.cpp-vulkan"
@@ -417,8 +456,12 @@ fi
 
 echo ""
 echo "── Nvidia device visibility ──"
-if command -v nvidia-smi >/dev/null 2>&1; then
-    nvidia-smi --query-gpu=name --format=csv,noheader | sed 's/^/  /'
+if ! ${_has_nvidia}; then
+    echo "  No Nvidia GPU detected."
+elif command -v nvidia-smi >/dev/null 2>&1; then
+    if ! nvidia-smi --query-gpu=name --format=csv,noheader | sed 's/^/  /'; then
+        echo "  nvidia-smi could not query the detected Nvidia GPU."
+    fi
 else
     echo "  nvidia-smi not available"
 fi

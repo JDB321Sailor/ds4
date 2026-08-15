@@ -20,7 +20,6 @@ makedepends=(
   'cmake'
   'ninja'
   'vulkan-headers'
-  'glslc'
   'shaderc'
 )
 
